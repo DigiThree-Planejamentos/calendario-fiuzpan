@@ -239,7 +239,6 @@
   <span class="toolbar-label">Ações:</span>
   <button class="btn btn-cyan" onclick="window.print()">🖨 Imprimir</button>
   <button class="btn btn-cyan" onclick="salvarAlteracoes()">💾 Salvar alterações</button>
-  <button class="btn btn-ghost" onclick="resetGitHubToken()">🔐 Token GitHub</button>
   <button class="btn btn-ghost" id="editModeBtn" onclick="toggleEditMode()">✏️ Modo Edição</button>
   <button class="btn btn-ghost" onclick="openDatasModal()">🗓 Datas Comemorativas</button>
   <div class="month-nav" id="monthNav"><button class="month-btn" id="mnav0">Jan</button><button class="month-btn" id="mnav1">Fev</button><button class="month-btn" id="mnav2">Mar</button><button class="month-btn active" id="mnav3">Abr</button><button class="month-btn" id="mnav4">Mai</button><button class="month-btn" id="mnav5">Jun</button><button class="month-btn" id="mnav6">Jul</button><button class="month-btn" id="mnav7">Ago</button><button class="month-btn" id="mnav8">Set</button><button class="month-btn" id="mnav9">Out</button><button class="month-btn" id="mnav10">Nov</button><button class="month-btn" id="mnav11">Dez</button></div>
@@ -1455,155 +1454,6 @@ function exportHTML(){
   }, 100);
 }
 
-
-
-function inferGitHubPagesConfig(){
-  const host = window.location.hostname || '';
-  const path = window.location.pathname || '/';
-  const owner = host.replace(/\.github\.io$/i,'');
-  const repo = owner ? `${owner}.github.io` : '';
-  let filePath = path.replace(/^\//,'');
-  if(!filePath) filePath = 'index.html';
-  else if(filePath.endsWith('/')) filePath += 'index.html';
-  else if(!/\.html?$/i.test(filePath)) filePath += '/index.html';
-  return { owner, repo, branch: 'main', path: filePath, token: '' };
-}
-
-const GITHUB_CFG_KEY = 'calendar-github-pages-config-v1';
-
-function loadGitHubPagesConfig(){
-  const inferred = inferGitHubPagesConfig();
-  try{
-    const saved = JSON.parse(localStorage.getItem(GITHUB_CFG_KEY) || '{}');
-    return { ...inferred, ...saved, token: saved.token || '' };
-  }catch(_err){
-    return inferred;
-  }
-}
-
-function saveGitHubPagesConfig(cfg){
-  localStorage.setItem(GITHUB_CFG_KEY, JSON.stringify(cfg));
-}
-
-function resetGitHubToken(){
-  const cfg = loadGitHubPagesConfig();
-  cfg.token = '';
-  saveGitHubPagesConfig(cfg);
-  showToast('Token removido. No próximo salvamento ele será solicitado.');
-}
-
-async function ensureGitHubPagesConfig(){
-  const cfg = loadGitHubPagesConfig();
-  if(!cfg.owner || !cfg.repo || !cfg.path){
-    throw new Error('Não foi possível identificar automaticamente o repositório e o caminho do arquivo.');
-  }
-  if(!cfg.token){
-    const token = window.prompt(
-      'Cole um token do GitHub com permissão de Contents: Read and Write para salvar no site.\n\nEle ficará salvo apenas neste navegador.',
-      ''
-    );
-    if(!token) throw new Error('Salvamento cancelado.');
-    cfg.token = token.trim();
-  }
-  if(!cfg.branch){
-    cfg.branch = (window.prompt('Qual branch deve ser atualizada?', 'main') || 'main').trim() || 'main';
-  }
-  saveGitHubPagesConfig(cfg);
-  return cfg;
-}
-
-function utf8ToBase64(str){
-  const bytes = new TextEncoder().encode(str);
-  let binary = '';
-  const chunk = 0x8000;
-  for(let i=0;i<bytes.length;i+=chunk){
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
-function jsonForInlineScript(value){
-  return JSON.stringify(value).replace(/<\//g, '<\\/');
-}
-
-function upsertPersistedStatePatch(html, state){
-  const patch = `\n<script id="persisted-calendar-state">\nwindow.__PERSISTED_CALENDAR_STATE__ = ${jsonForInlineScript(state)};\nif(typeof applyCalendarState === 'function'){ applyCalendarState(window.__PERSISTED_CALENDAR_STATE__); }\n<\/script>\n`;
-  if(/<script id="persisted-calendar-state">[\s\S]*?<\/script>/i.test(html)){
-    return html.replace(/<script id="persisted-calendar-state">[\s\S]*?<\/script>/i, patch.trim());
-  }
-  return html.replace(/<\/body>/i, patch + '</body>');
-}
-
-async function commitHtmlToGitHub(html){
-  const cfg = await ensureGitHubPagesConfig();
-  const apiBase = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}`;
-  let sha = null;
-
-  const existing = await fetch(`${apiBase}?ref=${encodeURIComponent(cfg.branch)}`, {
-    headers: {
-      'Accept': 'application/vnd.github+json',
-      'Authorization': `Bearer ${cfg.token}`
-    }
-  });
-
-  if(existing.status === 200){
-    const current = await existing.json();
-    sha = current.sha;
-  }else if(existing.status !== 404){
-    const errText = await existing.text();
-    throw new Error(`GitHub respondeu ${existing.status}. ${errText}`);
-  }
-
-  const body = {
-    message: `Atualiza ${cfg.path} via calendário editorial`,
-    content: utf8ToBase64(html),
-    branch: cfg.branch
-  };
-  if(sha) body.sha = sha;
-
-  const response = await fetch(apiBase, {
-    method: 'PUT',
-    headers: {
-      'Accept': 'application/vnd.github+json',
-      'Authorization': `Bearer ${cfg.token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-
-  if(!response.ok){
-    const errText = await response.text();
-    throw new Error(`Não foi possível salvar no GitHub (${response.status}). ${errText}`);
-  }
-
-  return response.json();
-}
-
-function buildPersistentHtml(){
-  const client = (document.getElementById('hdrClient')?.innerText || '').trim();
-  const year = (document.getElementById('hdrYear')?.innerText || '').trim();
-  const sub = (document.getElementById('hdrSub')?.innerText || '').trim();
-  let src = document.documentElement.outerHTML;
-  src = src.replace(/(<span contenteditable="true" id="hdrClient"[^>]*>)([\s\S]*?)(<\/span>)/, `$1${client}$3`);
-  src = src.replace(/(<em contenteditable="true" id="hdrYear"[^>]*>)([\s\S]*?)(<\/em>)/, `$1${year}$3`);
-  src = src.replace(/(<span[^>]*id="hdrSub"[^>]*>)([\s\S]*?)(<\/span>)/, `$1${sub}$3`);
-  src = upsertPersistedStatePatch(src, collectCalendarState());
-  return src;
-}
-
-async function salvarAlteracoes(){
-  try{
-    showToast('Salvando no site...');
-    const html = buildPersistentHtml();
-    await commitHtmlToGitHub(html);
-    showToast('Alterações salvas no site com sucesso!');
-  }catch(err){
-    console.error(err);
-    showToast(err && err.message ? err.message : 'Não foi possível salvar no site.');
-  }
-}
-
-
 function showToast(msg){
   const t=document.getElementById('toast');t.textContent=msg;
   t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2800);
@@ -1686,25 +1536,77 @@ function collectCalendarState(){
 }
 
 async function salvarAlteracoes(){
+  let token = localStorage.getItem('github_token_fiuzpan');
+  if(!token){
+    token = prompt('Cole seu token do GitHub:');
+    if(!token) return;
+    localStorage.setItem('github_token_fiuzpan', token);
+  }
+
+  const OWNER = 'DigiThree-Planejamentos';
+  const REPO = 'calendario-fiuzpan';
+  const BRANCH = 'main';
+  const PATH = 'index.html';
+
   try{
-    const state = collectCalendarState();
-    await idbSet(CALENDAR_STATE_KEY, state);
-    showToast('Alterações salvas com sucesso!');
+    const client = (document.getElementById('hdrClient')?.innerText || '').trim();
+    const year = (document.getElementById('hdrYear')?.innerText || '').trim();
+    const sub = (document.getElementById('hdrSub')?.innerText || '').trim();
+
+    document.querySelectorAll('.month-notes').forEach(el=>{
+      const m = Number(el.dataset.month);
+      if(m && MONTHS_CONFIG[m-1]) MONTHS_CONFIG[m-1].notes = el.innerHTML;
+    });
+
+    const source = document.documentElement.outerHTML
+      .replace(/(<span contenteditable="true" id="hdrClient"[^>]*>)([\s\S]*?)(<\/span>)/, `$1${client}$3`)
+      .replace(/(<em contenteditable="true" id="hdrYear"[^>]*>)([\s\S]*?)(<\/em>)/, `$1${year}$3`)
+      .replace(/(<span[^>]*id="hdrSub"[^>]*>)([\s\S]*?)(<\/span>)/, `$1${sub}$3`)
+      .replace(/const MONTHS_CONFIG = \[[\s\S]*?\];\n\n\/\/ Pre-filled posts per month/, `const MONTHS_CONFIG = ${JSON.stringify(MONTHS_CONFIG, null, 2)};\n\n// Pre-filled posts per month`)
+      .replace(/let POSTS = \[[\s\S]*?\];\n\n\/\/ Ensure imgs array on every post/, `let POSTS = ${JSON.stringify(POSTS, null, 2)};\n\n// Ensure imgs array on every post`)
+      .replace(/let PLAN_DATA = \{[\s\S]*?\};\n\nfunction getPlan/, `let PLAN_DATA = ${JSON.stringify(PLAN_DATA, null, 2)};\n\nfunction getPlan`);
+
+    const getRes = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json'
+      }
+    });
+
+    if(!getRes.ok){
+      const err = await getRes.json().catch(()=>({}));
+      throw new Error(err.message || 'Erro ao buscar arquivo no GitHub.');
+    }
+
+    const current = await getRes.json();
+    const content = btoa(unescape(encodeURIComponent(source)));
+
+    const putRes = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json'
+      },
+      body: JSON.stringify({
+        message: 'Atualiza calendário Fiuzpan pelo site',
+        content,
+        sha: current.sha,
+        branch: BRANCH
+      })
+    });
+
+    if(!putRes.ok){
+      const err = await putRes.json().catch(()=>({}));
+      throw new Error(err.message || 'Erro ao salvar no GitHub.');
+    }
+
+    showToast('Alterações salvas no site com sucesso!');
   }catch(err){
     console.error(err);
-    try{
-      const fallback = JSON.stringify({
-        header: collectCalendarState().header,
-        monthNotes: collectCalendarState().monthNotes,
-        plans: monthlyPlans,
-        specialDates: specialDatesByMonth
-      });
-      localStorage.setItem(CALENDAR_STATE_KEY + '-fallback', fallback);
-      showToast('Alterações salvas parcialmente.');
-    }catch(err2){
-      console.error(err2);
-      showToast('Não foi possível salvar as alterações.');
+    if(String(err.message || '').toLowerCase().includes('bad credentials')){
+      localStorage.removeItem('github_token_fiuzpan');
     }
+    showToast('Erro ao salvar: ' + (err.message || 'falha desconhecida'));
   }
 }
 
