@@ -210,10 +210,6 @@
   .add-data-btn:hover{border-color:var(--blue);color:var(--blue);background:#eef4ff;}
   .data-col-labels{display:grid;grid-template-columns:60px 1fr 36px;gap:8px;padding:0 0 4px;}
   .data-col-labels span{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);}
-  
-  .github-settings{display:flex;gap:8px;align-items:center;margin-left:8px;flex-wrap:wrap;}
-  .gh-badge{font-size:10px;color:var(--cyan);opacity:.9;}
-
   .toast{position:fixed;bottom:24px;right:24px;background:var(--navy);color:#fff;padding:11px 18px;border-radius:10px;font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.18);transform:translateY(80px);opacity:0;transition:all .3s;z-index:9999;}
   .toast.show{transform:none;opacity:1;}
 
@@ -242,8 +238,8 @@
 <div class="toolbar">
   <span class="toolbar-label">Ações:</span>
   <button class="btn btn-cyan" onclick="window.print()">🖨 Imprimir</button>
-  <button class="btn btn-cyan" onclick="saveToGitHub()">💾 Salvar no site</button>
-  <button class="btn btn-ghost" onclick="openGitHubModal()">⚙️ GitHub</button>
+  <button class="btn btn-cyan" onclick="salvarAlteracoes()">💾 Salvar alterações</button>
+  <button class="btn btn-ghost" onclick="resetGitHubToken()">🔐 Token GitHub</button>
   <button class="btn btn-ghost" id="editModeBtn" onclick="toggleEditMode()">✏️ Modo Edição</button>
   <button class="btn btn-ghost" onclick="openDatasModal()">🗓 Datas Comemorativas</button>
   <div class="month-nav" id="monthNav"><button class="month-btn" id="mnav0">Jan</button><button class="month-btn" id="mnav1">Fev</button><button class="month-btn" id="mnav2">Mar</button><button class="month-btn active" id="mnav3">Abr</button><button class="month-btn" id="mnav4">Mai</button><button class="month-btn" id="mnav5">Jun</button><button class="month-btn" id="mnav6">Jul</button><button class="month-btn" id="mnav7">Ago</button><button class="month-btn" id="mnav8">Set</button><button class="month-btn" id="mnav9">Out</button><button class="month-btn" id="mnav10">Nov</button><button class="month-btn" id="mnav11">Dez</button></div>
@@ -1046,6 +1042,7 @@ function updateStats(){
 // ── Build Month Nav ──
 function buildMonthNav(){
   const nav=document.getElementById('monthNav');
+  nav.innerHTML='';
   MONTHS_CONFIG.forEach((mc,i)=>{
     const btn=document.createElement('button');
     btn.className='month-btn';
@@ -1458,139 +1455,161 @@ function exportHTML(){
   }, 100);
 }
 
+
+
+function inferGitHubPagesConfig(){
+  const host = window.location.hostname || '';
+  const path = window.location.pathname || '/';
+  const owner = host.replace(/\.github\.io$/i,'');
+  const repo = owner ? `${owner}.github.io` : '';
+  let filePath = path.replace(/^\//,'');
+  if(!filePath) filePath = 'index.html';
+  else if(filePath.endsWith('/')) filePath += 'index.html';
+  else if(!/\.html?$/i.test(filePath)) filePath += '/index.html';
+  return { owner, repo, branch: 'main', path: filePath, token: '' };
+}
+
+const GITHUB_CFG_KEY = 'calendar-github-pages-config-v1';
+
+function loadGitHubPagesConfig(){
+  const inferred = inferGitHubPagesConfig();
+  try{
+    const saved = JSON.parse(localStorage.getItem(GITHUB_CFG_KEY) || '{}');
+    return { ...inferred, ...saved, token: saved.token || '' };
+  }catch(_err){
+    return inferred;
+  }
+}
+
+function saveGitHubPagesConfig(cfg){
+  localStorage.setItem(GITHUB_CFG_KEY, JSON.stringify(cfg));
+}
+
+function resetGitHubToken(){
+  const cfg = loadGitHubPagesConfig();
+  cfg.token = '';
+  saveGitHubPagesConfig(cfg);
+  showToast('Token removido. No próximo salvamento ele será solicitado.');
+}
+
+async function ensureGitHubPagesConfig(){
+  const cfg = loadGitHubPagesConfig();
+  if(!cfg.owner || !cfg.repo || !cfg.path){
+    throw new Error('Não foi possível identificar automaticamente o repositório e o caminho do arquivo.');
+  }
+  if(!cfg.token){
+    const token = window.prompt(
+      'Cole um token do GitHub com permissão de Contents: Read and Write para salvar no site.\n\nEle ficará salvo apenas neste navegador.',
+      ''
+    );
+    if(!token) throw new Error('Salvamento cancelado.');
+    cfg.token = token.trim();
+  }
+  if(!cfg.branch){
+    cfg.branch = (window.prompt('Qual branch deve ser atualizada?', 'main') || 'main').trim() || 'main';
+  }
+  saveGitHubPagesConfig(cfg);
+  return cfg;
+}
+
+function utf8ToBase64(str){
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  const chunk = 0x8000;
+  for(let i=0;i<bytes.length;i+=chunk){
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function jsonForInlineScript(value){
+  return JSON.stringify(value).replace(/<\//g, '<\\/');
+}
+
+function upsertPersistedStatePatch(html, state){
+  const patch = `\n<script id="persisted-calendar-state">\nwindow.__PERSISTED_CALENDAR_STATE__ = ${jsonForInlineScript(state)};\nif(typeof applyCalendarState === 'function'){ applyCalendarState(window.__PERSISTED_CALENDAR_STATE__); }\n<\/script>\n`;
+  if(/<script id="persisted-calendar-state">[\s\S]*?<\/script>/i.test(html)){
+    return html.replace(/<script id="persisted-calendar-state">[\s\S]*?<\/script>/i, patch.trim());
+  }
+  return html.replace(/<\/body>/i, patch + '</body>');
+}
+
+async function commitHtmlToGitHub(html){
+  const cfg = await ensureGitHubPagesConfig();
+  const apiBase = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}`;
+  let sha = null;
+
+  const existing = await fetch(`${apiBase}?ref=${encodeURIComponent(cfg.branch)}`, {
+    headers: {
+      'Accept': 'application/vnd.github+json',
+      'Authorization': `Bearer ${cfg.token}`
+    }
+  });
+
+  if(existing.status === 200){
+    const current = await existing.json();
+    sha = current.sha;
+  }else if(existing.status !== 404){
+    const errText = await existing.text();
+    throw new Error(`GitHub respondeu ${existing.status}. ${errText}`);
+  }
+
+  const body = {
+    message: `Atualiza ${cfg.path} via calendário editorial`,
+    content: utf8ToBase64(html),
+    branch: cfg.branch
+  };
+  if(sha) body.sha = sha;
+
+  const response = await fetch(apiBase, {
+    method: 'PUT',
+    headers: {
+      'Accept': 'application/vnd.github+json',
+      'Authorization': `Bearer ${cfg.token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if(!response.ok){
+    const errText = await response.text();
+    throw new Error(`Não foi possível salvar no GitHub (${response.status}). ${errText}`);
+  }
+
+  return response.json();
+}
+
+function buildPersistentHtml(){
+  const client = (document.getElementById('hdrClient')?.innerText || '').trim();
+  const year = (document.getElementById('hdrYear')?.innerText || '').trim();
+  const sub = (document.getElementById('hdrSub')?.innerText || '').trim();
+  let src = document.documentElement.outerHTML;
+  src = src.replace(/(<span contenteditable="true" id="hdrClient"[^>]*>)([\s\S]*?)(<\/span>)/, `$1${client}$3`);
+  src = src.replace(/(<em contenteditable="true" id="hdrYear"[^>]*>)([\s\S]*?)(<\/em>)/, `$1${year}$3`);
+  src = src.replace(/(<span[^>]*id="hdrSub"[^>]*>)([\s\S]*?)(<\/span>)/, `$1${sub}$3`);
+  src = upsertPersistedStatePatch(src, collectCalendarState());
+  return src;
+}
+
+async function salvarAlteracoes(){
+  try{
+    showToast('Salvando no site...');
+    const html = buildPersistentHtml();
+    await commitHtmlToGitHub(html);
+    showToast('Alterações salvas no site com sucesso!');
+  }catch(err){
+    console.error(err);
+    showToast(err && err.message ? err.message : 'Não foi possível salvar no site.');
+  }
+}
+
+
 function showToast(msg){
   const t=document.getElementById('toast');t.textContent=msg;
   t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2800);
 }
 
 document.getElementById('modalOverlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal();});
-
-
-function getGitHubDefaults(){
-  const host = window.location.hostname || '';
-  const owner = host.split('.')[0] || '';
-  const repo = host.includes('github.io') ? host : '';
-  let path = window.location.pathname.replace(/^\//,'');
-  if(!path || path.endsWith('/')) path += 'index.html';
-  return { owner, repo, path, branch: 'main' };
-}
-
-function getGitHubSettings(){
-  const defaults = getGitHubDefaults();
-  try{
-    const raw = localStorage.getItem('fiuzpan_github_settings');
-    const saved = raw ? JSON.parse(raw) : {};
-    return { ...defaults, ...saved };
-  }catch(e){
-    return defaults;
-  }
-}
-
-function openGitHubModal(){
-  const s = getGitHubSettings();
-  document.getElementById('ghOwner').value = s.owner || '';
-  document.getElementById('ghRepo').value = s.repo || '';
-  document.getElementById('ghPath').value = s.path || '';
-  document.getElementById('ghBranch').value = s.branch || 'main';
-  document.getElementById('ghToken').value = s.token || '';
-  document.getElementById('githubModal').classList.add('open');
-}
-
-function closeGitHubModal(){
-  document.getElementById('githubModal').classList.remove('open');
-}
-
-function saveGitHubSettings(){
-  const settings = {
-    owner: document.getElementById('ghOwner').value.trim(),
-    repo: document.getElementById('ghRepo').value.trim(),
-    path: document.getElementById('ghPath').value.trim(),
-    branch: document.getElementById('ghBranch').value.trim() || 'main',
-    token: document.getElementById('ghToken').value.trim()
-  };
-  localStorage.setItem('fiuzpan_github_settings', JSON.stringify(settings));
-  closeGitHubModal();
-  showToast('⚙️ Configuração do GitHub salva neste navegador!');
-}
-
-function buildCurrentHTML(){
-  const clone = document.documentElement.cloneNode(true);
-  clone.querySelectorAll('.toast.show').forEach(el=>el.classList.remove('show'));
-  clone.querySelectorAll('input[type="file"]').forEach(el=>el.remove());
-
-  const client=document.getElementById('hdrClient').innerText.trim();
-  const year=document.getElementById('hdrYear').innerText.trim();
-  const sub=document.getElementById('hdrSub').innerText.trim();
-
-  let src='<!DOCTYPE html>\n'+clone.outerHTML;
-  src=src.replace(/(<span contenteditable="true" id="hdrClient"[^>]*>)[^<]*/,`$1${client}`);
-  src=src.replace(/(<em contenteditable="true" id="hdrYear"[^>]*>)[^<]*/,`$1${year}`);
-  src=src.replace(/(<span class="sub" contenteditable="true" id="hdrSub"[^>]*>)[^<]*/,`$1${sub}`);
-  src=src.replace(/let POSTS = \[([\s\S]*?)\];/,`let POSTS = ${JSON.stringify(POSTS)};`);
-  src=src.replace(/let PLAN_DATA = \{([\s\S]*?)\};/,`let PLAN_DATA = ${JSON.stringify(PLAN_DATA)};`);
-  return src;
-}
-
-async function saveToGitHub(){
-  const s = getGitHubSettings();
-  if(!s.owner || !s.repo || !s.path || !s.token){
-    openGitHubModal();
-    showToast('⚠️ Preencha a configuração do GitHub primeiro.');
-    return;
-  }
-
-  try{
-    showToast('⏳ Salvando no GitHub...');
-    const apiBase = `https://api.github.com/repos/${encodeURIComponent(s.owner)}/${encodeURIComponent(s.repo)}/contents/${s.path.split('/').map(encodeURIComponent).join('/')}`;
-    const headers = {
-      'Authorization': `Bearer ${s.token}`,
-      'Accept': 'application/vnd.github+json',
-      'Content-Type': 'application/json'
-    };
-
-    let sha = null;
-    const getRes = await fetch(`${apiBase}?ref=${encodeURIComponent(s.branch)}`, { headers });
-    if(getRes.ok){
-      const current = await getRes.json();
-      sha = current.sha;
-    }else if(getRes.status !== 404){
-      const err = await getRes.text();
-      throw new Error(`Falha ao ler arquivo atual (${getRes.status}). ${err}`);
-    }
-
-    const html = buildCurrentHTML();
-    const content = btoa(unescape(encodeURIComponent(html)));
-    const payload = {
-      message: `Atualiza calendário editorial (${new Date().toLocaleString('pt-BR')})`,
-      content,
-      branch: s.branch
-    };
-    if(sha) payload.sha = sha;
-
-    const putRes = await fetch(apiBase, {
-      method: 'PUT',
-      headers,
-      body: JSON.stringify(payload)
-    });
-    if(!putRes.ok){
-      const err = await putRes.text();
-      throw new Error(`Falha ao salvar (${putRes.status}). ${err}`);
-    }
-    showToast('✅ Alterações salvas no site com sucesso!');
-  }catch(err){
-    console.error(err);
-    showToast('❌ Erro ao salvar no GitHub. Confira token, repo, branch e caminho.');
-  }
-}
-
-document.addEventListener('keydown', (e)=>{
-  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='s'){
-    e.preventDefault();
-    saveToGitHub();
-  }
-});
-
-document.getElementById('githubModal').addEventListener('click',e=>{if(e.target===e.currentTarget)closeGitHubModal();});
 
 // ── Init ──
 buildMonthNav();
