@@ -1667,10 +1667,14 @@ function idbGet(key){
 
 function collectCalendarState(){
   const state = {
-    posts: postsByKey,
+    posts: typeof POSTS !== 'undefined' ? POSTS : [],
+    plan: typeof PLAN_DATA !== 'undefined' ? PLAN_DATA : {},
+    plans: typeof PLAN_DATA !== 'undefined' ? PLAN_DATA : {},
+    months: typeof MONTHS_CONFIG !== 'undefined' ? MONTHS_CONFIG.map(m => ({
+      notes: m.notes || '',
+      special: m.special || {}
+    })) : [],
     monthNotes: {},
-    plans: monthlyPlans,
-    specialDates: specialDatesByMonth,
     header: {
       client: document.getElementById('hdrClient')?.innerHTML || '',
       year: document.getElementById('hdrYear')?.innerHTML || '',
@@ -1718,16 +1722,38 @@ function applyCalendarState(state){
     if(document.getElementById('hdrSub') && typeof state.header.sub === 'string') document.getElementById('hdrSub').innerHTML = state.header.sub;
   }
 
+  if(typeof POSTS !== 'undefined' && Array.isArray(state.posts)){
+    POSTS = state.posts;
+  }
+
+  if(typeof PLAN_DATA !== 'undefined' && (state.plan || state.plans)){
+    PLAN_DATA = state.plan || state.plans;
+  }
+
+  if(typeof MONTHS_CONFIG !== 'undefined'){
+    if(Array.isArray(state.months)){
+      state.months.forEach((m,i)=>{
+        if(MONTHS_CONFIG[i]){
+          if(m.notes !== undefined) MONTHS_CONFIG[i].notes = m.notes || '';
+          if(m.special !== undefined) MONTHS_CONFIG[i].special = m.special || {};
+        }
+      });
+    }
+
+    if(state.monthNotes){
+      Object.keys(state.monthNotes).forEach(month=>{
+        const idx = Number(month) - 1;
+        if(MONTHS_CONFIG[idx]) MONTHS_CONFIG[idx].notes = state.monthNotes[month] || '';
+      });
+    }
+  }
+
   if(state.monthNotes){
     document.querySelectorAll('.month-notes').forEach(el=>{
       const m = el.dataset.month;
       if(m && state.monthNotes[m] !== undefined) el.innerHTML = state.monthNotes[m];
     });
   }
-
-  if(state.plans && typeof monthlyPlans !== 'undefined') monthlyPlans = state.plans;
-  if(state.specialDates && typeof specialDatesByMonth !== 'undefined') specialDatesByMonth = state.specialDates;
-  if(state.posts && typeof postsByKey !== 'undefined') postsByKey = state.posts;
 
   if(typeof renderAll === 'function') renderAll();
   else {
@@ -1794,13 +1820,21 @@ function loadLocalBackup(){
 
 function getSiteData(){
   if(typeof collectCalendarState === 'function'){
-    return collectCalendarState();
+    try{
+      return collectCalendarState();
+    }catch(err){
+      console.warn('collectCalendarState falhou, usando coleta alternativa:', err);
+    }
   }
 
   const state = {
     posts: typeof POSTS !== 'undefined' ? POSTS : [],
-    months: typeof MONTHS_CONFIG !== 'undefined' ? MONTHS_CONFIG : [],
+    months: typeof MONTHS_CONFIG !== 'undefined' ? MONTHS_CONFIG.map(m => ({
+      notes: m.notes || '',
+      special: m.special || {}
+    })) : [],
     plan: typeof PLAN_DATA !== 'undefined' ? PLAN_DATA : {},
+    plans: typeof PLAN_DATA !== 'undefined' ? PLAN_DATA : {},
     header: {
       client: document.getElementById('hdrClient')?.innerHTML || '',
       year: document.getElementById('hdrYear')?.innerHTML || '',
@@ -1821,23 +1855,30 @@ function applySiteData(data){
   if(!data) return;
 
   if(typeof applyCalendarState === 'function'){
-    applyCalendarState(data);
-    return;
+    try{
+      applyCalendarState(data);
+      return;
+    }catch(err){
+      console.warn('applyCalendarState falhou, aplicando fallback:', err);
+    }
   }
 
-  if(typeof POSTS !== 'undefined' && data.posts) POSTS = data.posts;
+  if(typeof POSTS !== 'undefined' && Array.isArray(data.posts)) POSTS = data.posts;
   if(typeof PLAN_DATA !== 'undefined' && (data.plan || data.plans)) PLAN_DATA = data.plan || data.plans;
 
   if(typeof MONTHS_CONFIG !== 'undefined'){
     if(data.months){
       data.months.forEach((m,i)=>{
-        if(MONTHS_CONFIG[i] && m.notes !== undefined) MONTHS_CONFIG[i].notes = m.notes;
+        if(MONTHS_CONFIG[i]){
+          if(m.notes !== undefined) MONTHS_CONFIG[i].notes = m.notes || '';
+          if(m.special !== undefined) MONTHS_CONFIG[i].special = m.special || {};
+        }
       });
     }
     if(data.monthNotes){
       Object.keys(data.monthNotes).forEach(month=>{
         const idx = Number(month) - 1;
-        if(MONTHS_CONFIG[idx]) MONTHS_CONFIG[idx].notes = data.monthNotes[month];
+        if(MONTHS_CONFIG[idx]) MONTHS_CONFIG[idx].notes = data.monthNotes[month] || '';
       });
     }
   }
